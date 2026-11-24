@@ -1,0 +1,84 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --navy-950: #050b18;
+    --navy-900: #0a1329;
+    --navy-850: #0f1c3d;
+    --navy-800: #14234b;
+    --navy-700: #1c3166;
+    --navy-600: #26438a;
+    --border-navy: #1f335c;
+    
+    --gold-100: #fbf7e6;
+    --gold-200: #f5ecc5;
+    --gold-300: #ecd994;
+    --gold-400: #dfc261;
+    --gold-500: #d4af37;
+    --gold-600: #b58d24;
+    --gold-700: #8d6b15;
+  }
+
+  body {
+    background-color: #050b18;
+    color: #f1f5f9;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Custom luxury scrollbars */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0a1329;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #1f335c;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #d4af37;
+  }
+}
+
+/* Luxury Hotel Aesthetic Utilities */
+.bg-navy-dark {
+  background-color: #050b18;
+}
+
+.bg-navy-card {
+  background-color: #0b152d;
+  border: 1px solid #1a2a4f;
+}
+
+.bg-navy-card-hover:hover {
+  background-color: #0f1c3b;
+  border-color: #d4af3744;
+}
+
+.bg-gold-gradient {
+  background: linear-gradient(135deg, #f7e7a9 0%, #d4af37 50%, #aa841e 100%);
+}
+
+.text-gold {
+  color: #d4af37;
+}
+
+.border-gold {
+  border-color: #d4af37;
+}
+
+.border-navy-subtle {
+  border-color: #1f335c;
+}
+
+.shadow-gold-subtle {
+  box-shadow: 0 4px 20px -2px rgba(212, 175, 55, 0.15);
+}
+
+.gold-glow {
+  box-shadow: 0 0 15px rgba(212, 175, 55, 0.25);
+}
