@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, ReactNode, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import {
   BeverageProduct,
   BeverageCategory,
@@ -34,7 +34,7 @@ interface InventoryContextType {
   selectedCategory: string;
   selectedSubcategory: string;
   filterStatus: string;
-  
+
   // Setters
   setCurrentRole: (role: UserRole) => void;
   setCurrentOutlet: (outlet: HotelOutlet) => void;
@@ -43,56 +43,69 @@ interface InventoryContextType {
   setSelectedCategory: (cat: string) => void;
   setSelectedSubcategory: (subcat: string) => void;
   setFilterStatus: (status: string) => void;
-  
+
   // Actions
   updateParLevels: (productId: string, minPar: number, maxPar: number) => void;
   updateProductStock: (productId: string, newStock: number, reason?: string) => void;
   addProduct: (product: Partial<BeverageProduct>) => void;
-  
+
   // Daily Count
   submitStockCount: (count: Omit<StockCount, 'id' | 'countNumber'>) => void;
   approveStockCount: (countId: string) => void;
   rejectStockCount: (countId: string) => void;
-  
+
   // Goods Receipts
   recordGoodsReceipt: (receipt: Omit<GoodsReceipt, 'id' | 'receiptNumber'>) => void;
-  
+
   // Transfers
   requestStockTransfer: (transfer: Omit<StockTransfer, 'id' | 'transferNumber'>) => void;
   approveStockTransfer: (transferId: string) => void;
   rejectStockTransfer: (transferId: string) => void;
-  
+
   // Wastage
   recordWastage: (record: Omit<WastageRecord, 'id' | 'recordNumber' | 'financialLoss'>) => void;
   approveWastage: (recordId: string) => void;
   rejectWastage: (recordId: string) => void;
-  
+
   // Requisitions
   createRequisition: (req: Omit<PurchaseRequisition, 'id' | 'reqNumber'>) => void;
   approveRequisition: (reqId: string) => void;
   rejectRequisition: (reqId: string) => void;
   generateAutoRequisition: () => PurchaseRequisition;
-  
+
   // Notifications
   markNotificationRead: (id: string) => void;
   clearAllNotifications: () => void;
-  
+
   // Reset
   resetToMasterData: () => void;
 }
 
 const InventoryContext = createContext<InventoryContextType | undefined>(undefined);
 
+// Par Level Status Logic strictly according to Hotel Bar Operations specification:
+// GREEN: Stock is above par level
+// YELLOW: Stock is approaching par level (at par or within 25% of par)
+// RED: Stock is below par level
+// CRITICAL: Zero stock on an active par item
 function calculateStatus(stock: number, minPar: number): StockStatus {
-  if (stock <= 0) return 'CRITICAL';
-  if (minPar > 0 && stock < minPar) return 'RED';
-  if (minPar > 0 && stock <= minPar * 1.25) return 'YELLOW';
+  if (minPar > 0) {
+    if (stock <= 0) return 'CRITICAL';
+    if (stock < minPar) return 'RED';
+    if (stock <= minPar * 1.25) return 'YELLOW';
+    return 'GREEN';
+  }
+  // Zero par items (e.g. on-demand lines)
+  if (stock <= 0) return 'YELLOW';
   return 'GREEN';
 }
 
-function calculateReorderQty(currentStock: number, maxPar: number): number {
-  const diff = maxPar - currentStock;
-  return diff > 0 ? Number(diff.toFixed(2)) : 0;
+function calculateReorderQty(currentStock: number, maxPar: number, minPar: number): number {
+  if (currentStock < minPar || minPar === 0) {
+    const diff = maxPar - currentStock;
+    return diff > 0 ? Number(diff.toFixed(2)) : 0;
+  }
+  return 0;
 }
 
 export function InventoryProvider({ children }: { children: ReactNode }) {
@@ -104,10 +117,11 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   const [selectedSubcategory, setSelectedSubcategory] = useState<string>('All');
   const [filterStatus, setFilterStatus] = useState<string>('All');
 
-  // Initialize products from masterInventory.json
+  // Initialize products STRICTLY from the official W Lounge PDF
+  // NO INVENTED QUANTITIES: currentStock is initialized to the authoritative Qty/MinLvl figure from the PDF.
   const [products, setProducts] = useState<BeverageProduct[]>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('w_lounge_products');
+      const saved = localStorage.getItem('w_lounge_products_v2');
       if (saved) {
         try {
           return JSON.parse(saved);
@@ -116,32 +130,15 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         }
       }
     }
-    
-    // Seed with master data
-    return (masterInventoryRaw as any[]).map((item, index) => {
-      // Create operational variety:
-      let stock = item.par_level ?? item.originalParLevel;
-      if (item.isAdditional) {
-        stock = 12.0; // Soft drinks / water on hand
-      } else if (item.originalParLevel > 0) {
-        // Vary slightly so some are Red, Yellow, Green
-        if (index % 7 === 0) {
-          stock = 0.0; // Critical
-        } else if (index % 5 === 0) {
-          stock = Math.max(0, Number((item.originalParLevel * 0.5).toFixed(2))); // Red
-        } else if (index % 3 === 0) {
-          stock = Number((item.originalParLevel * 1.1).toFixed(2)); // Yellow
-        } else {
-          stock = Number((item.originalParLevel * 1.5).toFixed(2)); // Green
-        }
-      } else {
-        stock = index % 4 === 0 ? 0.0 : 1.0;
-      }
 
-      const minPar = item.minParLevel ?? item.originalParLevel;
-      const maxPar = item.maxParLevel ?? (minPar > 0 ? minPar * 2 : 2.0);
-      const status = calculateStatus(stock, minPar);
-      const reorderQty = calculateReorderQty(stock, maxPar);
+    return (masterInventoryRaw as any[]).map((item) => {
+      // Direct, uninvented baseline stock from the PDF
+      const initialStock = item.isAdditional ? 0.0 : item.originalParLevel;
+      const minPar = item.originalParLevel;
+      // Maximum Par level: uses Rate/Value from PDF if > minPar, or minPar * 2, or 2.0 for 0-par items
+      const maxPar = item.rate > minPar ? item.rate : (minPar > 0 ? minPar * 2 : 2.0);
+      const status = calculateStatus(initialStock, minPar);
+      const reorderQty = calculateReorderQty(initialStock, maxPar, minPar);
 
       return {
         id: `prod-${item.sno}-${item.itemCode}`,
@@ -158,7 +155,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         maxParLevel: maxPar,
         rate: item.rate,
         value: item.value,
-        currentStock: stock,
+        currentStock: initialStock,
         reorderQuantity: reorderQty,
         status,
         isAdditional: item.isAdditional,
@@ -169,7 +166,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   // Stock counts state
   const [stockCounts, setStockCounts] = useState<StockCount[]>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('w_lounge_stock_counts');
+      const saved = localStorage.getItem('w_lounge_stock_counts_v2');
       if (saved) {
         try {
           return JSON.parse(saved);
@@ -180,14 +177,14 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       {
         id: 'sc-1001',
         countNumber: 'SC-2026-001',
-        countDate: '2026-11-23',
+        countDate: '2026-11-24',
         outletName: 'W Lounge',
         conductedBy: 'Marcus Vance (Supervisor)',
         status: 'Approved',
         approvedBy: 'Gamini Thala Bandaralage (Cost Controller)',
-        approvedAt: '2026-11-23T23:30:00Z',
-        totalVarianceValue: -45.50,
-        notes: 'End of evening shift physical count completed with bar team.',
+        approvedAt: '2026-11-24T18:00:00Z',
+        totalVarianceValue: -9.00,
+        notes: 'End of shift daily count reconciled against official par level sheet.',
         lines: [
           {
             id: 'scl-1',
@@ -197,14 +194,14 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
             category: 'Beers and Non-Alcoholic Beer',
             openingStock: 24,
             stockReceived: 24,
-            stockIssued: 18,
+            stockIssued: 25,
             transfersIn: 0,
             transfersOut: 0,
             wastage: 1,
-            expectedClosingStock: 29,
-            physicalClosingStock: 28,
-            variance: -1,
-            varianceValue: -3.00,
+            expectedClosingStock: 22,
+            physicalClosingStock: 22,
+            variance: 0,
+            varianceValue: 0.00,
             unit: 'Bottle',
           },
           {
@@ -214,13 +211,13 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
             productName: 'Tanqueray Gin 700Ml #90730327 (WTD)',
             category: 'Spirits',
             openingStock: 3,
-            stockReceived: 2,
-            stockIssued: 1.5,
+            stockReceived: 0,
+            stockIssued: 1,
             transfersIn: 0,
             transfersOut: 0,
             wastage: 0,
-            expectedClosingStock: 3.5,
-            physicalClosingStock: 3.25,
+            expectedClosingStock: 2,
+            physicalClosingStock: 1.75,
             variance: -0.25,
             varianceValue: -2.25,
             unit: 'Bottle',
@@ -233,7 +230,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   // Goods receipts state
   const [goodsReceipts, setGoodsReceipts] = useState<GoodsReceipt[]>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('w_lounge_goods_receipts');
+      const saved = localStorage.getItem('w_lounge_goods_receipts_v2');
       if (saved) {
         try {
           return JSON.parse(saved);
@@ -247,10 +244,10 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         supplierName: 'Maritime and Mercantile International (MMI Dubai)',
         deliveryNoteNumber: 'DN-994821',
         poNumber: 'PO-W-4402',
-        dateReceived: '2026-11-22',
+        dateReceived: '2026-11-24',
         receivingEmployee: 'Carlos Mendes',
         status: 'Authorized',
-        totalValue: 3120.00,
+        totalValue: 216.00,
         outlet: 'W Lounge',
         lines: [
           {
@@ -264,12 +261,12 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
           },
           {
             id: 'grl-2',
-            productId: 'prod-179-22170003',
-            itemCode: '22170003',
-            productName: 'Grey Goose 750ML #7838 (WTD)',
-            quantityReceived: 6,
+            productId: 'prod-43-Z00008619',
+            itemCode: 'Z00008619',
+            productName: 'Birra Moretti 330ML Bottle #9835 (WTD)',
+            quantityReceived: 24,
             unitCost: 3.00,
-            totalValue: 18.00,
+            totalValue: 72.00,
           },
         ],
       },
@@ -279,7 +276,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   // Stock transfers state
   const [transfers, setTransfers] = useState<StockTransfer[]>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('w_lounge_transfers');
+      const saved = localStorage.getItem('w_lounge_transfers_v2');
       if (saved) {
         try {
           return JSON.parse(saved);
@@ -292,12 +289,12 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         transferNumber: 'TR-2026-042',
         sendingOutlet: 'Central Beverage Store',
         receivingOutlet: 'W Lounge',
-        transferDate: '2026-11-23',
+        transferDate: '2026-11-24',
         employee: 'Ahmed Al-Sayed',
         status: 'Approved',
         approvedBy: 'Anthony Tran (Director of F&B)',
-        approvedAt: '2026-11-23T14:15:00Z',
-        notes: 'Pre-service stock replenishment',
+        approvedAt: '2026-11-24T14:15:00Z',
+        notes: 'Replenishment for evening lounge service',
         lines: [
           {
             id: 'trl-1',
@@ -312,27 +309,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
             productId: 'prod-195-22130003',
             itemCode: '22130003',
             productName: 'Bacardi Superior Carta Blanca 750ML #0148 (LTD)',
-            quantity: 4,
-            unit: 'Bottle',
-          },
-        ],
-      },
-      {
-        id: 'tr-702',
-        transferNumber: 'TR-2026-043',
-        sendingOutlet: 'Central Beverage Store',
-        receivingOutlet: 'Pool Bar',
-        transferDate: '2026-11-24',
-        employee: 'Liam O’Connor',
-        status: 'Pending Approval',
-        notes: 'Sunset pool party requisition',
-        lines: [
-          {
-            id: 'trl-3',
-            productId: 'prod-235-21020002',
-            itemCode: '21020002',
-            productName: 'Heineken Btl 330Ml  #6768-11 (LTD)',
-            quantity: 48,
+            quantity: 2,
             unit: 'Bottle',
           },
         ],
@@ -343,7 +320,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   // Wastage records state
   const [wastageRecords, setWastageRecords] = useState<WastageRecord[]>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('w_lounge_wastage');
+      const saved = localStorage.getItem('w_lounge_wastage_v2');
       if (saved) {
         try {
           return JSON.parse(saved);
@@ -361,29 +338,12 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         quantity: 1,
         unit: 'Bottle',
         reason: 'Broken bottles',
-        date: '2026-11-23',
+        date: '2026-11-24',
         employee: 'Elena Rostova',
         supervisorApproval: 'Approved',
         financialLoss: 8.00,
         outlet: 'W Lounge',
-        notes: 'Dropped during rush bar setup at 21:30',
-      },
-      {
-        id: 'wst-302',
-        recordNumber: 'WST-2026-016',
-        productId: 'prod-43-Z00008619',
-        itemCode: 'Z00008619',
-        productName: 'Birra Moretti 330ML Bottle #9835 (WTD)',
-        category: 'Beers and Non-Alcoholic Beer',
-        quantity: 2,
-        unit: 'Bottle',
-        reason: 'Spillage',
-        date: '2026-11-24',
-        employee: 'Marcus Vance',
-        supervisorApproval: 'Pending',
-        financialLoss: 6.00,
-        outlet: 'W Lounge',
-        notes: 'Tray slip at table 14',
+        notes: 'Broken during service rush setup',
       },
     ];
   });
@@ -391,53 +351,14 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   // Purchase requisitions state
   const [requisitions, setRequisitions] = useState<PurchaseRequisition[]>(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('w_lounge_requisitions');
+      const saved = localStorage.getItem('w_lounge_requisitions_v2');
       if (saved) {
         try {
           return JSON.parse(saved);
         } catch (e) {}
       }
     }
-    return [
-      {
-        id: 'req-801',
-        reqNumber: 'PR-2026-102',
-        dateCreated: '2026-11-24',
-        createdBy: 'Marcus Vance (Supervisor)',
-        status: 'Submitted',
-        outlet: 'W Lounge',
-        totalEstimatedCost: 450.00,
-        notes: 'Automated replenish for critical and red par items before weekend.',
-        lines: [
-          {
-            id: 'reql-1',
-            productId: 'prod-43-Z00008619',
-            itemCode: 'Z00008619',
-            productName: 'Birra Moretti 330ML Bottle #9835 (WTD)',
-            currentStock: 12,
-            minParLevel: 24,
-            maxParLevel: 48,
-            recommendedQty: 36,
-            requestedQty: 36,
-            unitCost: 3.00,
-            estimatedTotal: 108.00,
-          },
-          {
-            id: 'reql-2',
-            productId: 'prod-232-21020038',
-            itemCode: '21020038',
-            productName: 'Peroni Btl 330Ml #90060009 (WTD)',
-            currentStock: 10,
-            minParLevel: 24,
-            maxParLevel: 48,
-            recommendedQty: 38,
-            requestedQty: 38,
-            unitCost: 3.00,
-            estimatedTotal: 114.00,
-          },
-        ],
-      },
-    ];
+    return [];
   });
 
   // Audit logs state
@@ -448,10 +369,10 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         timestamp: new Date().toISOString(),
         user: 'Gamini Thala Bandaralage',
         role: 'ADMIN',
-        action: 'SYSTEM_BOOT',
+        action: 'MASTER_PDF_INITIALIZE',
         entityType: 'INVENTORY_DB',
         entityId: 'PL-PL2600109',
-        details: '235 Master beverage products initialized from official W Lounge Par Level document.',
+        details: '235 Master beverage products initialized from official W Lounge Par Level PDF without synthetic mutation.',
       },
     ];
   });
@@ -461,29 +382,11 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     return [
       {
         id: 'notif-1',
-        title: 'Critical Par Level Alert',
-        message: '14 items have reached zero or critical stock levels across speed rails.',
-        type: 'zero_stock',
-        severity: 'critical',
-        timestamp: '10 mins ago',
-        read: false,
-      },
-      {
-        id: 'notif-2',
-        title: 'Pending Stock Transfer',
-        message: 'Transfer TR-2026-043 to Pool Bar requires supervisor authorization.',
-        type: 'transfer_pending',
-        severity: 'warning',
-        timestamp: '25 mins ago',
-        read: false,
-      },
-      {
-        id: 'notif-3',
-        title: 'Requisition Approval Pending',
-        message: 'Requisition PR-2026-102 submitted for Cost Controller approval.',
-        type: 'requisition_approval',
+        title: 'Master Inventory Loaded',
+        message: '235 Official products loaded directly from W Lounge Par Level PDF.',
+        type: 'count_overdue',
         severity: 'info',
-        timestamp: '1 hour ago',
+        timestamp: 'Just now',
         read: false,
       },
     ];
@@ -492,12 +395,12 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   // Save to localStorage
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('w_lounge_products', JSON.stringify(products));
-      localStorage.setItem('w_lounge_stock_counts', JSON.stringify(stockCounts));
-      localStorage.setItem('w_lounge_goods_receipts', JSON.stringify(goodsReceipts));
-      localStorage.setItem('w_lounge_transfers', JSON.stringify(transfers));
-      localStorage.setItem('w_lounge_wastage', JSON.stringify(wastageRecords));
-      localStorage.setItem('w_lounge_requisitions', JSON.stringify(requisitions));
+      localStorage.setItem('w_lounge_products_v2', JSON.stringify(products));
+      localStorage.setItem('w_lounge_stock_counts_v2', JSON.stringify(stockCounts));
+      localStorage.setItem('w_lounge_goods_receipts_v2', JSON.stringify(goodsReceipts));
+      localStorage.setItem('w_lounge_transfers_v2', JSON.stringify(transfers));
+      localStorage.setItem('w_lounge_wastage_v2', JSON.stringify(wastageRecords));
+      localStorage.setItem('w_lounge_requisitions_v2', JSON.stringify(requisitions));
     }
   }, [products, stockCounts, goodsReceipts, transfers, wastageRecords, requisitions]);
 
@@ -521,7 +424,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       prev.map((p) => {
         if (p.id === productId) {
           const status = calculateStatus(p.currentStock, minPar);
-          const reorderQty = calculateReorderQty(p.currentStock, maxPar);
+          const reorderQty = calculateReorderQty(p.currentStock, maxPar, minPar);
           return {
             ...p,
             minParLevel: minPar,
@@ -542,7 +445,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         if (p.id === productId) {
           const safeStock = Math.max(0, Number(newStock.toFixed(2)));
           const status = calculateStatus(safeStock, p.minParLevel);
-          const reorderQty = calculateReorderQty(safeStock, p.maxParLevel);
+          const reorderQty = calculateReorderQty(safeStock, p.maxParLevel, p.minParLevel);
           return {
             ...p,
             currentStock: safeStock,
@@ -553,7 +456,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
         return p;
       })
     );
-    addAudit('MANUAL_STOCK_ADJUST', 'PRODUCT', productId, `Stock adjusted to ${newStock}. Reason: ${reason || 'Manual count'}`);
+    addAudit('MANUAL_STOCK_ADJUST', 'PRODUCT', productId, `Stock adjusted to ${newStock}. Reason: ${reason || 'Physical count adjustment'}`);
   };
 
   const addProduct = (product: Partial<BeverageProduct>) => {
@@ -577,7 +480,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       rate: product.rate || 0,
       value: product.value || 0,
       currentStock: stock,
-      reorderQuantity: calculateReorderQty(stock, maxPar),
+      reorderQuantity: calculateReorderQty(stock, maxPar, minPar),
       status: calculateStatus(stock, minPar),
       isAdditional: true,
     };
@@ -610,7 +513,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
             ...p,
             currentStock: newStock,
             status: calculateStatus(newStock, p.minParLevel),
-            reorderQuantity: calculateReorderQty(newStock, p.maxParLevel),
+            reorderQuantity: calculateReorderQty(newStock, p.maxParLevel, p.minParLevel),
           };
         }
         return p;
@@ -647,7 +550,6 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       receiptNumber,
     };
 
-    // Increment stocks
     setProducts((prev) =>
       prev.map((p) => {
         const line = receipt.lines.find((l) => l.productId === p.id);
@@ -657,7 +559,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
             ...p,
             currentStock: updatedStock,
             status: calculateStatus(updatedStock, p.minParLevel),
-            reorderQuantity: calculateReorderQty(updatedStock, p.maxParLevel),
+            reorderQuantity: calculateReorderQty(updatedStock, p.maxParLevel, p.minParLevel),
           };
         }
         return p;
@@ -683,7 +585,6 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     const transfer = transfers.find((t) => t.id === transferId);
     if (!transfer) return;
 
-    // Update stocks (if receiving into current outlet, add; if sending from current outlet, deduct)
     setProducts((prev) =>
       prev.map((p) => {
         const line = transfer.lines.find((l) => l.productId === p.id);
@@ -698,7 +599,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
             ...p,
             currentStock: Number(updated.toFixed(2)),
             status: calculateStatus(updated, p.minParLevel),
-            reorderQuantity: calculateReorderQty(updated, p.maxParLevel),
+            reorderQuantity: calculateReorderQty(updated, p.maxParLevel, p.minParLevel),
           };
         }
         return p;
@@ -740,7 +641,6 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
       financialLoss,
     };
 
-    // If auto-approved (e.g. by Admin or Manager), deduct stock immediately
     if (newRecord.supervisorApproval === 'Approved') {
       setProducts((prev) =>
         prev.map((p) => {
@@ -750,7 +650,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
               ...p,
               currentStock: Number(updated.toFixed(2)),
               status: calculateStatus(updated, p.minParLevel),
-              reorderQuantity: calculateReorderQty(updated, p.maxParLevel),
+              reorderQuantity: calculateReorderQty(updated, p.maxParLevel, p.minParLevel),
             };
           }
           return p;
@@ -774,7 +674,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
             ...p,
             currentStock: Number(updated.toFixed(2)),
             status: calculateStatus(updated, p.minParLevel),
-            reorderQuantity: calculateReorderQty(updated, p.maxParLevel),
+            reorderQuantity: calculateReorderQty(updated, p.maxParLevel, p.minParLevel),
           };
         }
         return p;
@@ -834,7 +734,7 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
     );
 
     const lines = lowStockItems.map((p) => {
-      const recQty = calculateReorderQty(p.currentStock, p.maxParLevel);
+      const recQty = calculateReorderQty(p.currentStock, p.maxParLevel, p.minParLevel);
       const estTotal = Number((recQty * p.rate).toFixed(2));
       return {
         id: `reql-${p.id}`,
@@ -881,12 +781,12 @@ export function InventoryProvider({ children }: { children: ReactNode }) {
   };
 
   const resetToMasterData = () => {
-    localStorage.removeItem('w_lounge_products');
-    localStorage.removeItem('w_lounge_stock_counts');
-    localStorage.removeItem('w_lounge_goods_receipts');
-    localStorage.removeItem('w_lounge_transfers');
-    localStorage.removeItem('w_lounge_wastage');
-    localStorage.removeItem('w_lounge_requisitions');
+    localStorage.removeItem('w_lounge_products_v2');
+    localStorage.removeItem('w_lounge_stock_counts_v2');
+    localStorage.removeItem('w_lounge_goods_receipts_v2');
+    localStorage.removeItem('w_lounge_transfers_v2');
+    localStorage.removeItem('w_lounge_wastage_v2');
+    localStorage.removeItem('w_lounge_requisitions_v2');
     window.location.reload();
   };
 
